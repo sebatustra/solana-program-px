@@ -17,3 +17,15 @@ pub fn fixed_point_divide_checked(a: u64, b: u64) -> Result<u64, ProgramError> {
 
     Ok(result)
 }
+
+pub fn fixed_point_multiply_checked(a: u64, b: u64) -> Result<u64, ProgramError> {
+    const SCALE: u64 = 1_000_000;
+
+    let product = a.checked_mul(b)
+        .ok_or::<ProgramError>(CustomError::ArithmeticError.into())?;
+    
+    let result = product.checked_div(SCALE)
+        .ok_or::<ProgramError>(CustomError::ArithmeticError.into())?;
+
+    Ok(result)
+}

@@ -11,7 +11,6 @@ use solana_program::{
     system_instruction::create_account, 
     system_program::ID as SYSTEM_PROGRAM_ID, 
     sysvar::Sysvar,
-    msg
 };
 use spl_token::{
     ID as TOKEN_PROGRAM_ID,
@@ -188,14 +187,16 @@ impl FundAccount {
         Ok(())
     }
 
-    pub fn initialize_fund_mint<'a>(
+    pub fn initialize_fund_mint_and_vault<'a>(
         program_id: &Pubkey,
         punto_xero: &AccountInfo<'a>,
         manager: &AccountInfo<'a>,
         fund_account: &AccountInfo<'a>,
         mint_account: &AccountInfo<'a>,
+        fund_vault: &AccountInfo<'a>,
         system_program: &AccountInfo<'a>,
         token_program: &AccountInfo<'a>,
+        associated_token_account_program: &AccountInfo<'a>,
         rent_sysvar: &AccountInfo<'a>,
         fund_name: &str
     ) -> ProgramResult {
@@ -240,12 +241,25 @@ impl FundAccount {
             return Err(ProgramError::InvalidAccountData)
         }
 
+        if *associated_token_account_program.key != ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID {
+            return Err(ProgramError::InvalidAccountData)
+        }
+
         let (mint_pda, mint_bump) = Pubkey::find_program_address(
             &[b"fund_mint", fund_name.as_bytes()], 
             program_id
         );
 
         if mint_pda != *mint_account.key {
+            return Err(ProgramError::InvalidAccountData)
+        }
+
+        let (fund_vault_pda, _vault_bump_seed) = Pubkey::find_program_address(
+            &[b"fund_vault", fund_name.as_bytes()], 
+            program_id
+        );
+
+        if fund_vault_pda != *fund_vault.key {
             return Err(ProgramError::InvalidAccountData)
         }
 
@@ -296,6 +310,33 @@ impl FundAccount {
                 fund_name.as_bytes(), 
                 &[mint_bump]
             ]]
+        )?;
+
+        let create_vault_ix = create_associated_token_account(
+            punto_xero.key, 
+            fund_account.key, 
+            mint_account.key, 
+            token_program.key
+        );
+
+        invoke_signed(
+            &create_vault_ix, 
+            &[
+                mint_account.clone(),
+                fund_vault.clone(),
+                punto_xero.clone(),
+                fund_account.clone(),
+                token_program.clone(),
+                system_program.clone(),
+                associated_token_account_program.clone(),
+            ],
+            &[
+                &[
+                    b"fund_account",
+                    fund_name.as_bytes(),
+                    &[account_data.bump_seed]
+                ]
+            ]
         )?;
 
         Ok(())
