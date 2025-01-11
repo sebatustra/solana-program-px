@@ -32,22 +32,13 @@ pub fn init_fund(
         punto_xero_master, 
         manager_master, 
         fund_account,
-        system_program,
-        share_value, 
-        &fund_name
-    )?;
-
-    FundAccount::initialize_fund_mint_and_vault(
-        program_id, 
-        punto_xero_master, 
-        manager_master, 
-        fund_account, 
-        mint_account, 
+        mint_account,
         fund_vault,
-        system_program, 
+        system_program,
         token_program,
         associated_token_account_program,
         rent_sysvar,
+        share_value, 
         &fund_name
     )?;
 

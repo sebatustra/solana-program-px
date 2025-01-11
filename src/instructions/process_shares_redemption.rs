@@ -16,10 +16,11 @@ pub fn process_shares_redemption(
 
     let [
         punto_xero_master,
+        manager_master,
         fund_account,
         mint_account,
+        fund_vault,
         share_redemption_account,
-        share_redemption_ata,
         investor,
         token_program,
         system_program
@@ -30,10 +31,11 @@ pub fn process_shares_redemption(
     ShareRedemption::process_share_redemption(
         program_id, 
         punto_xero_master, 
+        manager_master,
         fund_account, 
         mint_account, 
         share_redemption_account, 
-        share_redemption_ata, 
+        fund_vault,
         investor, 
         token_program, 
         system_program, 

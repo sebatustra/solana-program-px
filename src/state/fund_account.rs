@@ -11,6 +11,7 @@ use solana_program::{
     system_instruction::create_account, 
     system_program::ID as SYSTEM_PROGRAM_ID, 
     sysvar::Sysvar,
+    msg,
 };
 use spl_token::{
     ID as TOKEN_PROGRAM_ID,
@@ -34,6 +35,9 @@ pub struct FundAccount {
     pub bump_seed: u8,
     pub punto_xero_master_pubkey: Pubkey,
     pub manager_master_pubkey: Pubkey,
+    pub fund_mint: Pubkey,
+    pub mint_bump_seed: u8,
+    pub fund_vault: Pubkey,
     pub share_value: u64,
     pub share_value_update: i64,
     pub fund_name: String
@@ -55,6 +59,9 @@ impl FundAccount {
             + 1      // for bump_seed
             + 32     // for punto_xero_master_pubkey
             + 32     // for manager_master_pubkey
+            + 32
+            + 1
+            + 32
             + 8      // for share_value
             + 8      // for share_value_update 
             + name.len()
@@ -65,12 +72,25 @@ impl FundAccount {
         punto_xero: &AccountInfo<'a>,
         manager: &AccountInfo<'a>,
         fund_account: &AccountInfo<'a>,
+        mint_account: &AccountInfo<'a>,
+        fund_vault: &AccountInfo<'a>,
         system_program: &AccountInfo<'a>,
+        token_program: &AccountInfo<'a>,
+        associated_token_account_program: &AccountInfo<'a>,
+        rent_sysvar: &AccountInfo<'a>,
         share_value: u64,
         fund_name: &str
     ) -> ProgramResult {
 
         if *system_program.key != SYSTEM_PROGRAM_ID {
+            return Err(ProgramError::InvalidAccountData)
+        }
+
+        if *token_program.key != TOKEN_PROGRAM_ID {
+            return Err(ProgramError::InvalidAccountData)
+        }
+
+        if *associated_token_account_program.key != ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID {
             return Err(ProgramError::InvalidAccountData)
         }
 
@@ -93,6 +113,24 @@ impl FundAccount {
 
         if pda != *fund_account.key {
             return Err(ProgramError::InvalidAccountData);
+        }
+
+        let (mint_pda, mint_bump) = Pubkey::find_program_address(
+            &[b"fund_mint", fund_name.as_bytes()], 
+            program_id
+        );
+
+        if mint_pda != *mint_account.key {
+            return Err(ProgramError::InvalidAccountData)
+        }
+
+        let fund_vault_pda = get_associated_token_address(
+            &fund_account.key, 
+            &mint_account.key
+        );
+
+        if fund_vault_pda != *fund_vault.key {
+            return Err(ProgramError::InvalidAccountData)
         }
 
         invoke_signed(
@@ -129,11 +167,92 @@ impl FundAccount {
         account_data.bump_seed = bump_seed;
         account_data.punto_xero_master_pubkey = *punto_xero.key;
         account_data.manager_master_pubkey = *manager.key;
+        account_data.fund_mint = *mint_account.key;
+        account_data.mint_bump_seed = mint_bump;
+        account_data.fund_vault = *fund_vault.key;
         account_data.share_value = share_value;
         account_data.share_value_update = current_timestamp;
         account_data.fund_name = fund_name.to_owned();
 
         account_data.serialize(&mut &mut fund_account.data.borrow_mut()[..])?;
+
+        let mint_space = Mint::LEN;
+        let rent_lamports = Rent::get()?.minimum_balance(mint_space);
+
+        let create_account_ix = create_account(
+            &punto_xero.key, 
+            &mint_account.key, 
+            rent_lamports, 
+            mint_space as u64, 
+            &token_program.key
+        );
+
+        invoke_signed(
+            &create_account_ix, 
+            &[
+                punto_xero.clone(),
+                mint_account.clone(),
+                token_program.clone(),
+                system_program.clone()
+            ], 
+            &[&[
+                b"fund_mint", 
+                fund_name.as_bytes(), 
+                &[mint_bump]
+            ]]
+        )?;
+
+        let create_mint_ix = initialize_mint(
+            &token_program.key, 
+            &mint_account.key, 
+            &fund_account.key, 
+            None, 
+            6
+        )?;
+
+        invoke_signed(
+            &create_mint_ix, 
+            &[
+                token_program.clone(),
+                mint_account.clone(),
+                fund_account.clone(),
+                rent_sysvar.clone(),
+            ], 
+            &[&[
+                b"fund_mint", 
+                fund_name.as_bytes(), 
+                &[mint_bump]
+            ]]
+        )?;
+
+        msg!("created mint!");
+
+        let create_vault_ix = create_associated_token_account(
+            punto_xero.key, 
+            fund_account.key, 
+            mint_account.key, 
+            token_program.key
+        );
+
+        invoke_signed(
+            &create_vault_ix, 
+            &[
+                mint_account.clone(),
+                fund_vault.clone(),
+                punto_xero.clone(),
+                fund_account.clone(),
+                token_program.clone(),
+                system_program.clone(),
+                associated_token_account_program.clone(),
+            ],
+            &[
+                &[
+                    b"fund_account",
+                    fund_name.as_bytes(),
+                    &[bump_seed]
+                ]
+            ]
+        )?;
 
         Ok(())
     }
@@ -187,161 +306,6 @@ impl FundAccount {
         Ok(())
     }
 
-    pub fn initialize_fund_mint_and_vault<'a>(
-        program_id: &Pubkey,
-        punto_xero: &AccountInfo<'a>,
-        manager: &AccountInfo<'a>,
-        fund_account: &AccountInfo<'a>,
-        mint_account: &AccountInfo<'a>,
-        fund_vault: &AccountInfo<'a>,
-        system_program: &AccountInfo<'a>,
-        token_program: &AccountInfo<'a>,
-        associated_token_account_program: &AccountInfo<'a>,
-        rent_sysvar: &AccountInfo<'a>,
-        fund_name: &str
-    ) -> ProgramResult {
-        if !punto_xero.is_signer {
-            return Err(ProgramError::MissingRequiredSignature);
-        }
-        
-        if !manager.is_signer {
-            return Err(ProgramError::MissingRequiredSignature);
-        }
-
-        if fund_account.owner != program_id {
-            return Err(ProgramError::IllegalOwner);
-        }
-
-        let account_data = try_from_slice_unchecked::<FundAccount>(
-            &fund_account.data.borrow()[..]
-        )?;
-
-        let pda = Pubkey::create_program_address(
-            &[b"fund_account", fund_name.as_bytes(), &[account_data.bump_seed]], 
-            program_id
-        )?;
-
-        if pda != *fund_account.key {
-            return Err(ProgramError::InvalidAccountData);
-        }
-
-        if account_data.punto_xero_master_pubkey != *punto_xero.key {
-            return Err(ProgramError::MissingRequiredSignature);
-        }
-
-        if account_data.manager_master_pubkey != *manager.key {
-            return Err(ProgramError::MissingRequiredSignature);
-        }
-
-        if *system_program.key != SYSTEM_PROGRAM_ID {
-            return Err(ProgramError::InvalidAccountData)
-        }
-
-        if *token_program.key != TOKEN_PROGRAM_ID {
-            return Err(ProgramError::InvalidAccountData)
-        }
-
-        if *associated_token_account_program.key != ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID {
-            return Err(ProgramError::InvalidAccountData)
-        }
-
-        let (mint_pda, mint_bump) = Pubkey::find_program_address(
-            &[b"fund_mint", fund_name.as_bytes()], 
-            program_id
-        );
-
-        if mint_pda != *mint_account.key {
-            return Err(ProgramError::InvalidAccountData)
-        }
-
-        let (fund_vault_pda, _vault_bump_seed) = Pubkey::find_program_address(
-            &[b"fund_vault", fund_name.as_bytes()], 
-            program_id
-        );
-
-        if fund_vault_pda != *fund_vault.key {
-            return Err(ProgramError::InvalidAccountData)
-        }
-
-        let mint_space = Mint::LEN;
-        let rent_lamports = Rent::get()?.minimum_balance(mint_space);
-
-        let create_account_ix = create_account(
-            &punto_xero.key, 
-            &mint_account.key, 
-            rent_lamports, 
-            mint_space as u64, 
-            &token_program.key
-        );
-
-        invoke_signed(
-            &create_account_ix, 
-            &[
-                punto_xero.clone(),
-                mint_account.clone(),
-                token_program.clone(),
-                system_program.clone()
-            ], 
-            &[&[
-                b"fund_mint", 
-                fund_name.as_bytes(), 
-                &[mint_bump]
-            ]]
-        )?;
-
-        let create_mint_ix = initialize_mint(
-            &token_program.key, 
-            &mint_account.key, 
-            &fund_account.key, 
-            None, 
-            6
-        )?;
-
-        invoke_signed(
-            &create_mint_ix, 
-            &[
-                token_program.clone(),
-                mint_account.clone(),
-                fund_account.clone(),
-                rent_sysvar.clone(),
-            ], 
-            &[&[
-                b"fund_mint", 
-                fund_name.as_bytes(), 
-                &[mint_bump]
-            ]]
-        )?;
-
-        let create_vault_ix = create_associated_token_account(
-            punto_xero.key, 
-            fund_account.key, 
-            mint_account.key, 
-            token_program.key
-        );
-
-        invoke_signed(
-            &create_vault_ix, 
-            &[
-                mint_account.clone(),
-                fund_vault.clone(),
-                punto_xero.clone(),
-                fund_account.clone(),
-                token_program.clone(),
-                system_program.clone(),
-                associated_token_account_program.clone(),
-            ],
-            &[
-                &[
-                    b"fund_account",
-                    fund_name.as_bytes(),
-                    &[account_data.bump_seed]
-                ]
-            ]
-        )?;
-
-        Ok(())
-    }
-
     pub fn buy_fund_shares<'a>(
         program_id: &Pubkey,
         punto_xero: &AccountInfo<'a>,
@@ -390,6 +354,10 @@ impl FundAccount {
 
         if fund_account_data.punto_xero_master_pubkey != *punto_xero.key {
             return Err(ProgramError::MissingRequiredSignature);
+        }
+
+        if fund_account_data.fund_mint != *mint_account.key {
+            return Err(ProgramError::InvalidAccountData);
         }
 
         let current_share_value = fund_account_data.share_value;

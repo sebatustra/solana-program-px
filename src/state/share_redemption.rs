@@ -11,7 +11,9 @@ use solana_program::{
     sysvar::Sysvar,
     rent::Rent,
     clock::Clock, 
+    msg
 };
+use spl_associated_token_account::get_associated_token_address;
 use spl_token::{
     ID as TOKEN_PROGRAM_ID,
     instruction::{transfer, burn},
@@ -50,14 +52,15 @@ impl ShareRedemption {
         + 32
         + 32
         + 8
+        + 8
         + 8;
 
     pub fn create_share_redemption<'a>(
         program_id: &Pubkey,
         punto_xero: &AccountInfo<'a>,
         fund_account: &AccountInfo<'a>,
-        fund_vault: &AccountInfo<'a>,
         mint_account: &AccountInfo<'a>,
+        fund_vault: &AccountInfo<'a>,
         share_redemption_account: &AccountInfo<'a>,
         investor: &AccountInfo<'a>,
         investor_ata: &AccountInfo<'a>,
@@ -96,19 +99,19 @@ impl ShareRedemption {
             return Err(ProgramError::InvalidAccountData);
         }
 
-        let (fund_vault_pda, _vault_bump_seed) = Pubkey::find_program_address(
-            &[b"fund_vault", fund_name.as_bytes()], 
-            program_id
+        let fund_vault_pda = get_associated_token_address(
+            &fund_account.key, 
+            &mint_account.key
         );
 
         if fund_vault_pda != *fund_vault.key {
             return Err(ProgramError::InvalidAccountData)
         }
 
-        let (mint_pda, _mint_bump) = Pubkey::find_program_address(
-            &[b"fund_mint", fund_name.as_bytes()], 
+        let mint_pda = Pubkey::create_program_address(
+            &[b"fund_mint", fund_name.as_bytes(), &[fund_account_data.mint_bump_seed]], 
             program_id
-        );
+        )?;
 
         if mint_pda != *mint_account.key {
             return Err(ProgramError::InvalidAccountData)
@@ -193,6 +196,7 @@ impl ShareRedemption {
     pub fn process_share_redemption<'a>(
         program_id: &Pubkey,
         punto_xero: &AccountInfo<'a>,
+        manager_master: &AccountInfo<'a>,
         fund_account: &AccountInfo<'a>,
         mint_account: &AccountInfo<'a>,
         share_redemption_account: &AccountInfo<'a>,
@@ -207,6 +211,12 @@ impl ShareRedemption {
         if !punto_xero.is_signer {
             return Err(ProgramError::MissingRequiredSignature);
         }
+
+        if !manager_master.is_signer {
+            return Err(ProgramError::MissingRequiredSignature);
+        }
+
+        msg!("signer checks passed");
 
         if fund_account.owner != program_id {
             return Err(ProgramError::IllegalOwner);
@@ -233,18 +243,18 @@ impl ShareRedemption {
             return Err(ProgramError::InvalidAccountData)
         }
 
-        let (mint_pda, _mint_bump) = Pubkey::find_program_address(
-            &[b"fund_mint", fund_name.as_bytes()], 
+        let mint_pda = Pubkey::create_program_address(
+            &[b"fund_mint", fund_name.as_bytes(), &[fund_account_data.mint_bump_seed]], 
             program_id
-        );
+        )?;
 
         if mint_pda != *mint_account.key {
             return Err(ProgramError::InvalidAccountData)
         }
 
-        let (fund_vault_pda, _vault_bump_seed) = Pubkey::find_program_address(
-            &[b"fund_vault", fund_name.as_bytes()], 
-            program_id
+        let fund_vault_pda = get_associated_token_address(
+            &fund_account.key, 
+            &mint_account.key
         );
 
         if fund_vault_pda != *fund_vault.key {
